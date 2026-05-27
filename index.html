@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zero-Work HIMYM 3D Intro Generator</title>
+    <!-- Load Hugging Face Transformers.js for automatic AI background removal -->
+    <script type="module">
+        import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.15.1';
+        window.imageSegmentationPipeline = pipeline;
+    </script>
+    <style>
+        :root { --himym-yellow: #FFCC00; }
+        body {
+            margin: 0; padding: 0; background-color: #111;
+            font-family: 'Trebuchet MS', Arial, sans-serif; color: white;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-height: 100vh; overflow: hidden;
+        }
+        #setup-screen {
+            text-align: center; max-width: 500px; padding: 30px;
+            background: #222; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+        }
+        #status-msg { margin: 15px 0; color: var(--himym-yellow); font-weight: bold; }
+        input[type="file"] { margin: 20px 0; display: block; width: 100%; }
+        button {
+            background-color: var(--himym-yellow); color: black; border: none;
+            padding: 14px 28px; font-size: 18px; font-weight: bold; border-radius: 5px;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        button:disabled { background-color: #555; color: #888; cursor: not-allowed; }
+        
+        /* Video Container */
+        #video-container { display: none; position: relative; width: 100vw; height: 100vh; background: black; overflow: hidden; }
+        .parallax-frame { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; visibility: hidden; }
+        .parallax-frame.active { opacity: 1; visibility: visible; }
+        
+        .layer {
+            position: absolute; top: -5%; left: -5%; width: 110%; height: 110%;
+            background-size: cover; background-position: center; will-change: transform;
+            filter: contrast(1.1) saturate(1.25);
+        }
+        .layer-fg { background-size: contain; background-repeat: no-repeat; }
+        .layer-fg::after {
+            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: inherit; filter: blur(15px); opacity: 0.3; mix-blend-mode: screen;
+        }
+
+        /* 3D Motion Paths */
+        .parallax-frame.active .layer-bg { animation: bgDrift 1s linear forwards; }
+        .parallax-frame.active .layer-fg { animation: fgDrift 1s cubic-bezier(0.1, 0.8, 0.3, 1) forwards; }
+
+        @keyframes bgDrift { 0% { transform: scale(1.0); } 100% { transform: scale(1.03) translate(-0.5%, 0.2%); } }
+        @keyframes fgDrift { 0% { transform: scale(1.0) translate(2%, -1%); } 100% { transform: scale(1.12) translate(-2%, 1%); } }
+
+        #shutter { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; z-index: 50; }
+        @keyframes flash-shutter { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
+
+        /* Branding Overlay */
+        #title-card {
+            display: none; position: absolute; bottom: 12%; left: 8%; z-index: 60;
+            text-transform: lowercase; font-style: italic; font-weight: 800; line-height: 1.1;
+            text-shadow: 2px 2px 5px rgba(0,0,0,0.7); animation: titlePop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        .white-text { font-size: 5.5vw; color: white; display: block; }
+        .yellow-box { background-color: rgba(15, 15, 15, 0.85); color: var(--himym-yellow); padding: 2px 18px; font-size: 6vw; display: inline-block; margin-top: 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen">
+        <h2 style="color: var(--himym-yellow); margin-top: 0;">AI 3D Intro Auto-Generator</h2>
+        <p style="color: #ccc; font-size: 14px;">Select 5 regular group photos. The built-in AI will automatically separate your friends from the background to generate the depth effect.</p>
+        
+        <div id="status-msg">Loading AI Vision Model (Please wait)...</div>
+        <input type="file" id="image-input" accept="image/*" multiple disabled>
+        <button id="start-btn" disabled>Create Video</button>
+    </div>
+
+    <div id="video-container">
+        <div id="shutter"></div>
+        <div id="timeline-wrapper"></div>
+        <div id="title-card"><span class="white-text">how i met your</span><span class="yellow-box">friends</span></div>
+    </div>
+
+    <audio id="theme-song" src="https://actions.google.com/sounds/v1/music/guitars_and_ukulele.ogg"></audio>
+
+    <script type="module">
+        let segmenter;
+        const statusMsg = document.getElementById('status-msg');
+        const imageInput = document.getElementById('image-input');
+        const startBtn = document.getElementById('start-btn');
+        const timelineWrapper = document.getElementById('timeline-wrapper');
+        
+        let processedFrames = [];
+
+        // Initialize the AI Model automatically on page load
+        window.addEventListener('load', async () => {
+            try {
+                if (!window.imageSegmentationPipeline) {
+                    throw new Error("Pipeline script delayed");
+                }
+                segmenter = await window.imageSegmentationPipeline('image-segmentation', 'Xenova/modnet');
+                statusMsg.textContent = "AI Ready! Select exactly 5 photos.";
+                imageInput.disabled = false;
+            } catch (err) {
+                statusMsg.textContent = "Error initializing AI module. Please refresh the page.";
+                console.error(err);
+            }
+        });
+
+        imageInput.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            if (files.length !== 5) {
+                statusMsg.textContent = `Error: Please select exactly 5 photos (You picked ${files.length}).`;
+                return;
+            }
+
+            startBtn.disabled = true;
+            imageInput.disabled = true;
+            processedFrames = [];
+
+            // Run through the photos and automatically slice them using AI
+            for (let i = 0; i < files.length; i++) {
+                statusMsg.textContent = `AI Processing Photo ${i + 1} of 5...`;
+                const originalUrl = URL.createObjectURL(files[i]);
+                
+                try {
+                    const cutoutUrl = await isolateSubjects(originalUrl);
+                    processedFrames.push({ bg: originalUrl, fg: cutoutUrl });
+                } catch (error) {
+                    processedFrames.push({ bg: originalUrl, fg: originalUrl }); // Fallback
+                }
+            }
+
+            statusMsg.textContent = "All processing complete!";
+            startBtn.disabled = false;
+        });
+
+        // AI Magic: Creates a cutout mask of the humans in the image
+        async function isolateSubjects(imgSrc) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.src = imgSrc;
+                img.crossOrigin = 'anonymous';
+                img.onload = async () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+
+                    // Call the neural network model to process image layers
+                    const result = await segmenter(imgSrc);
+                    
+                    // Create foreground extraction canvas layer
+                    const maskCanvas = document.createElement('canvas');
+                    maskCanvas.width = result.width;
+                    maskCanvas.height = result.height;
+                    const maskCtx = maskCanvas.getContext('2d');
+                    
+                    const imgData = maskCtx.createImageData(result.width, result.height);
+                    imgData.data.set(result.mask);
+                    maskCtx.putImageData(imgData, 0, 0);
+
+                    // Combine original and mask onto a clean transparent image map
+                    const outputCanvas = document.createElement('canvas');
+                    outputCanvas.width = img.width;
+                    outputCanvas.height = img.height;
+                    const outCtx = outputCanvas.getContext('2d');
+
+                    outCtx.drawImage(img, 0, 0);
+                    outCtx.globalCompositeOperation = 'destination-in';
+                    outCtx.drawImage(maskCanvas, 0, 0, img.width, img.height);
+
+                    resolve(outputCanvas.toDataURL('image/png'));
+                };
+                img.onerror = reject;
+            });
+        }
+
+        startBtn.addEventListener('click', () => {
+            // Drop layers straight into sequence array
+            processedFrames.forEach((frame) => {
+                const fNode = document.createElement('div');
+                fNode.classList.add('parallax-frame');
+
+                const bgNode = document.createElement('div');
+                bgNode.classList.add('layer', 'layer-bg');
+                bgNode.style.backgroundImage = `url('${frame.bg}')`;
+
+                const fgNode = document.createElement('div');
+                fgNode.classList.add('layer', 'layer-fg');
+                fgNode.style.backgroundImage = `url('${frame.fg}')`;
+
+                fNode.appendChild(bgNode);
+                fNode.appendChild(fgNode);
+                timelineWrapper.appendChild(fNode);
+            });
+
+            document.getElementById('setup-screen').style.display = 'none';
+            document.getElementById('video-container').style.display = 'block';
+
+            runPlaybackEngine();
+        });
+
+        function runPlaybackEngine() {
+            const frames = document.querySelectorAll('.parallax-frame');
+            const shutter = document.getElementById('shutter');
+            const themeSong = document.getElementById('theme-song');
+            const titleCard = document.getElementById('title-card');
+            let idx = 0;
+
+            themeSong.play().catch(e => console.log("Audio contextual trigger wait"));
+
+            function playNext() {
+                if (idx > 0) frames[idx - 1].classList.remove('active');
+
+                if (idx < frames.length) {
+                    frames[idx].classList.add('active');
+                    shutter.style.animation = 'none';
+                    setTimeout(() => { shutter.style.animation = 'flash-shutter 0.2s ease-out'; }, 5);
+
+                    if (idx === frames.length - 1) {
+                        setTimeout(() => { titleCard.style.display = 'block'; }, 500);
+                        return;
+                    }
+                    idx++;
+                    setTimeout(playNext, 1100);
+                }
+            }
+            playNext();
+        }
+    </script>
+</body>
+</html>
